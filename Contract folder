@@ -1,0 +1,183 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/utils/Address.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
+
+/**
+ * @title OUA-ID Smart Contract
+ * @dev An immutable, non-transferable digital identity as an ERC-721 NFT.
+ * Each ID is linked to a user's wallet and cannot be transferred.
+ */
+contract OUA_ID is ERC721, ERC721URIStorage, Ownable {
+    using Counters for Counters.Counter;
+    Counters.Counter private _tokenIdCounter;
+
+    // Mapping to prevent transfer of the NFT
+    mapping(uint256 => bool) private _isTransferable;
+
+    // Constructor to initialize the contract with a name and symbol
+    constructor(address initialOwner)
+        ERC721("OUA-ID", "OUAID")
+        Ownable(initialOwner)
+    {}
+
+    /**
+     * @dev Mints a new OUA-ID NFT for a specified recipient.
+     * Only the contract owner can call this function.
+     * @param to The address of the recipient.
+     * @param uri The URI pointing to the metadata of the ID (e.g., IPFS hash).
+     */
+    function mintID(address to, string memory uri) public onlyOwner {
+        require(to != address(0), "Cannot mint to zero address");
+        uint256 tokenId = _tokenIdCounter.current();
+        _tokenIdCounter.increment();
+        _safeMint(to, tokenId);
+        _setTokenURI(tokenId, uri);
+
+        // Mark the NFT as non-transferable
+        _isTransferable[tokenId] = false;
+    }
+
+    /**
+     * @dev Overrides the standard transfer function to prevent transfers.
+     * Transfers are not allowed for this NFT.
+     */
+    function _beforeTokenTransfer(
+        address from,
+        address to,
+        uint256 tokenId,
+        uint256 amount
+    ) internal virtual override(ERC721) {
+        if (from != address(0)) {
+            revert("OUA-ID is a non-transferable NFT");
+        }
+    }
+
+    /**
+     * @dev A placeholder function to verify a credential.
+     * This would be integrated with an off-chain or on-chain credential system.
+     * @param tokenId The ID of the NFT to verify.
+     * @param credentialHash A hash of the credential to verify.
+     * @return bool True if the credential is valid, false otherwise.
+     */
+    function verifyCredential(uint256 tokenId, bytes32 credentialHash)
+        public
+        pure
+        returns (bool)
+    {
+        // Add your credential verification logic here
+        // Example: Check against a registry or a ZKP
+        return true;
+    }
+
+    /**
+     * @dev A placeholder to update a health record.
+     * Would integrate with the OUA-HealthChain contract.
+     * @param tokenId The ID of the patient's NFT.
+     * @param recordHash The hash of the health record to link.
+     */
+    function updateHealthRecord(uint256 tokenId, bytes32 recordHash) public {
+        // Add your health record update logic here
+        // This could emit an event for the OUA-HealthChain to listen to
+        emit HealthRecordUpdated(tokenId, recordHash);
+    }
+
+    // Events for tracking updates
+    event HealthRecordUpdated(uint256 indexed tokenId, bytes32 recordHash);
+}
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+/**
+ * @title BOJ Token Smart Contract
+ * @dev An ERC-20 utility and governance token for the OUA ecosystem.
+ * Includes governance voting capabilities and a transaction tax.
+ */
+contract BOJToken is ERC20, ERC20Votes, Ownable {
+    uint256 public constant TOTAL_SUPPLY = 10_000_000_000 * (10 ** 18);
+    uint256 public constant TRANSACTION_TAX_RATE = 1; // 1% tax
+    address public treasuryAddress;
+
+    constructor(address initialOwner, address _treasuryAddress)
+        ERC20("BOJ Token", "BOJ")
+        Ownable(initialOwner)
+    {
+        _mint(initialOwner, TOTAL_SUPPLY); // Initial supply is minted to the owner
+        treasuryAddress = _treasuryAddress;
+    }
+
+    // Function to set the treasury address
+    function setTreasuryAddress(address newTreasuryAddress) public onlyOwner {
+        treasuryAddress = newTreasuryAddress;
+    }
+
+    /**
+     * @dev Transfers tokens with a built-in transaction tax.
+     * @param recipient The address to transfer tokens to.
+     * @param amount The amount of tokens to transfer.
+     * @return bool True if the transfer was successful.
+     */
+    function transfer(address recipient, uint256 amount)
+        public
+        virtual
+        override
+        returns (bool)
+    {
+        uint256 taxAmount = (amount * TRANSACTION_TAX_RATE) / 100;
+        uint256 amountAfterTax = amount - taxAmount;
+
+        // Transfer the tax to the treasury
+        _transfer(msg.sender, treasuryAddress, taxAmount);
+        // Transfer the remaining amount to the recipient
+        _transfer(msg.sender, recipient, amountAfterTax);
+
+        return true;
+    }
+
+    // The ERC20Votes part
+    function _afterTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal override(ERC20, ERC20Votes) {
+        super._afterTokenTransfer(from, to, amount);
+    }
+}
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/governance/Governor.sol";
+import "@openzeppelin/contracts/governance/extensions/GovernorVotes.sol";
+
+/**
+ * @title OUA-ValidatorDAO Smart Contract
+ * @dev A stake-weighted governance DAO for the OUA network.
+ * Validators can submit and vote on proposals.
+ */
+contract OUA_ValidatorDAO is Governor, GovernorVotes {
+    // The BOJ token contract address for stake-weighted voting
+    address public bojToken;
+    uint256 public constant QUORUM_PERCENTAGE = 60; // 60% quorum required
+
+    constructor(address _bojToken)
+        Governor("OUA-Validator-DAO")
+        GovernorVotes(ERC20Votes(_bojToken))
+    {
+        bojToken = _bojToken;
+    }
+
+    // Override the quorum function to apply a 60% quorum rule
+    function quorum(uint256 blockNumber) public view override returns (uint256) {
+        // Calculate the quorum based on the total circulating supply of BOJ tokens
+        uint256 totalBOJSupply = IERC20Votes(bojToken).getPastTotalSupply(blockNumber);
+        return (totalBOJSupply * QUORUM_PERCENTAGE) / 100;
+    }
+}
